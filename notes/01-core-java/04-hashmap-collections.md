@@ -51,22 +51,47 @@ static final int hash(Object key) {
     return (key == null) ? 0 : (h = key.hashCode()) ^ (h >>> 16);
 }
 ```
-**Why XOR with unsigned right shift by 16 (`h ^ (h >>> 16)`)?**
-* Standard table sizes are small (16, 32, 64).
-* In Java, `int` is 32 bits. If we only used `hashCode()`, only the lowest 4 or 5 bits would determine the bucket index.
-* High bits would never participate in index calculation, leading to massive collisions.
-* Shifting high 16 bits down and XORing them ensures **both high-order and low-order bits influence the lower 16 bits**.
+
+#### Why XOR with unsigned right shift by 16 (`h ^ (h >>> 16)`)?
+* In Java, `hashCode()` returns a 32-bit integer.
+* For small tables (e.g., initial capacity 16), the index mask `(n - 1) = 15` only checks the **lowest 4 bits**.
+* Without perturbation, the top 28 bits would be completely discarded. Any keys sharing the same last 4 bits would collide, regardless of differences in the top 28 bits.
+* `>>> 16` slides the top 16 bits down into the bottom 16 positions:
+
+```
+Original h:       [   UPPER 16 BITS   ]   [   LOWER 16 BITS   ]
+       ^                 XOR                      XOR
+h >>> 16:         [ 00000000 00000000 ]   [   UPPER 16 BITS   ]
+------------------------------------------------------------------
+Final hash:       [   UPPER 16 BITS   ]   [ LOWER ^ UPPER (Mixed!) ]
+```
+* **Result**: The lower bits now carry information from the upper bits. Collisions drop significantly.
+
+---
 
 ### Step 2: Fast Index Calculation (Bitwise AND)
 ```java
-index = (n - 1) & hash;  // where n is table.length (must be a power of 2)
+index = (n - 1) & hash;  // where n is table.length (strictly a power of 2)
 ```
-* If $n = 16$ ($2^4$), then $n - 1 = 15$ (`0000...00001111` in binary).
-* `hash & 15` extracts the lowest 4 bits, which is strictly in the range `[0, 15]`.
-* **Why not `hash % n`?** 
-  Bitwise AND (`&`) takes **1 CPU cycle**, while the modulo operator (`%`) takes dozens of cycles.
-* **Why MUST capacity be a power of 2?**
-  Only when $n = 2^k$ does $(n - 1)$ produce a bitmask of all 1s (`1111...`). If $n$ is not a power of 2 (say 15), $n-1 = 14$ (`1110`), meaning the last bit is `0`. Any bucket with an odd index (`1, 3, 5, 7...`) could never be reached!
+
+#### Why Bitwise AND (`&`) instead of Modulo (`%`)?
+* Modulo (`%`) requires hardware division, taking 20–40 CPU clock cycles.
+* Bitwise AND (`&`) is a simple masking operation that executes in **1 CPU clock cycle**.
+
+#### Visual Example:
+Let `hash = 77` and table capacity $n = 16$ (so mask $n - 1 = 15$):
+
+```
+  hash (77):     0 1 0 0   1 1 0 1   (Binary)
+& mask (15):     0 0 0 0   1 1 1 1   (Mask: only last 4 bits pass through)
+-----------------------------------
+  Result:        0 0 0 0   1 1 0 1   = 13 in decimal! (77 % 16 == 13)
+```
+
+#### Why MUST capacity be a power of 2?
+When $n = 2^k$, $n - 1$ is always a sequence of binary `1`s (e.g., $16 - 1 = 15 = 00001111_2$).
+If $n = 10$ (not a power of 2), $n - 1 = 9 = 00001001_2$. 
+Bits 1 and 2 would always evaluate to `0`, making indices 2, 3, 4, 5, 6, 7 impossible to ever reach! Half of the buckets would sit permanently empty.
 
 ---
 
